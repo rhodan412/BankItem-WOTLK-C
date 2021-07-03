@@ -7,6 +7,7 @@ Type /bigb or /bankitemsgb to see what is currently in your guild bank. You must
 
 # Originals
 https://www.curseforge.com/wow/addons/bank-items
+
 https://www.wowinterface.com/downloads/info25399-BankItemsClassic.html#info
 
 ![image](https://user-images.githubusercontent.com/85767653/124339918-e0137d00-dbb1-11eb-8dd7-c2fcca9523bd.png)
