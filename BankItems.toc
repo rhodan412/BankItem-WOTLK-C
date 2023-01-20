@@ -1,10 +1,10 @@
-## Interface: 20500
-## Title: BankItems Classic
+## Interface: 34100
+## Title: BankItems Classic (Wrath of the Lich King)
 ## Title-zhCN: 离线银行 BankItems
 ## Title-zhTW: 離線銀行 BankItems
-## Version: 2.56
+## Version: 3.41
 ## Notes: View bank, inventory, mail, equipped contents from any character
-## Author: Xinhuan
+## Author: Xinhuan, with mods by Hawksy
 ## X-Category: Inventory
 ## X-RelSite-UI.WoW: 1699
 ## X-Email: xinhuan AT gmail DOT com
