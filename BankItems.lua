@@ -1,6 +1,6 @@
-﻿--[[	*****************************************************************
-	BankItems v2.56
-	2021-January-10
+--[[	*****************************************************************
+	BankItems v3.41
+	2023-January-20
 
 	Author: Xinhuan @ US Blackrock Alliance
 	*****************************************************************
@@ -10,12 +10,9 @@
 
 		An addon that remembers the contents of your bank, bags,
 		mail and equipped and display them anywhere in the world.
-		Also able to remember/display the banks of any character
-		on the same account on any server, as well as searching
-		and exporting lists of bag/bank items out.
 
 	Download:
-		BankItems	- http://ui.worldofwar.net/ui.php?id=1699
+		BankItems   - http://www.wowace.com/projects/bank-items
 
 	Plugins:
 		These plugins allow clicking on the panel/plugin icon to
@@ -39,8 +36,15 @@
 
 		Most options are found in the GUI options panel.
 
+	Not a bug:
+		If you close your bank after retrieving/storing an item in it
+		too quickly and the server hasn't updated your inventory,
+		BankItems is unable to record the change to your bank when the
+		item actually moves later. The WoW API does not give you any
+		data about your bank once BANK_FRAME_CLOSED event has fired.
+
 	Credits:
-		Original concept from Merphle
+		Original concept from Merphle.
 		Last maintained by JASlaughter, then Galmok@Stormrage-EU.
 		Additional modifications for Classic by Hawksy on Elune
 	*****************************************************************
@@ -50,6 +54,11 @@ Xinhuan's Note:
 	if the option is set to open the BankItems bags along with the Blizzard default bags. This may
 	break any addon(s) that hook this function, but see no real reason why anyone would ever hook
 	that function in the first place.
+
+	updateContainerFrameAnchors() is the very last function called by
+	UIParent_ManageFramePositions(), hence tainting it shouldn't be an issue for petbars or any
+	other frame. Also, note that UIParent_ManageFramePositions() is almost always securecalled
+	from other functions in Blizzard code.
 ]]
 
 --------------------
@@ -87,7 +96,7 @@ Xinhuan's Note:
 -- CHANGED/FIXED: Changed the way BankItems bags show. They will no longer open up together with the normal bags because doing so taints the default UI and causes the petbar not to show/hide in combat. They will now open next to the BankItems main bank frame instead.
 -- FIXED: Fixed extra spaces that can appear on "/bi list".
 -- FIXED: Removed invisible "unclickable" space below the BankItems main bank frame.
--- FIXED: Fixed error due to ContainerIDToInventoryID(bagID) API change. Inputs outside the range of 1-11 (4 bag and 7 bank) are no longer valid input.
+-- FIXED: Fixed error due to C_Container.ContainerIDToInventoryID(bagID) API change. Inputs outside the range of 1-11 (4 bag and 7 bank) are no longer valid input.
 -- NEW: FuBar and Titan Panel plugins for BankItems are now available.
 --
 -- Because up to 12 possible bags can be displayed, users are adviced to change the scale in the GUI options.
@@ -176,11 +185,15 @@ Xinhuan's Note:
 -- FIXED: Fixed Export and Search only counting the first 18 slots of the mail bag.
 
 
--- 16th November 2007, by Xinhuan @ Blackrock US Alliance: Version 23000
+-- 27th November 2007, by Xinhuan @ Blackrock US Alliance: Version 23000
 -- For use with Live Servers v2.3.0.7561. TOC update to 20300.
 -- FIXED: Removed the "Behavior" character from appearing on the dropdown list when "Show All Realms" is selected.
 -- UPDATED: Updated BankItems to work with multiple attachments mail in 2.3.
 -- UPDATED: Split off localization into its own file. Removed the empty XML file.
+-- ADDED: Added Chinese and Taiwan localizations by Isler.
+-- ADDED: Added search filters to choose which bags to search.
+-- ADDED: Added optional tooltip data display showing how many of the same item you have. Using this option may cost a slight performance hit. You can disable this in the options.
+
 
 
 -- 2019-October-11 Hawksy @ Elune: BankItems Classic Version 2.5
@@ -193,6 +206,9 @@ Xinhuan's Note:
 --			Player A can see something they mailed to player B, but player B can't see that it is incoming -- even though players A and B can see each other's non-mail amounts
 -- 2019-December-29 Version 2.55 fixed an issue where moving something to or from the bank gave double-counting.
 -- 2021-Jan-10 Version 2.56 updated for 1.13.6
+-- 2022-July-01 Version 2.60 updated for 2.5.4 (Burning Crusade Classic)
+-- 2023-January-20 Version 3.41 updated for 3.4.1 (Wrath of the Lich King Classic)
+--		Added mail box function, and added a reload button (yellow curved arrow)
 
 --]]
 
@@ -203,6 +219,7 @@ local selfPlayer		= nil		-- table reference
 local selfPlayerName	= nil		-- string
 local selfPlayerRealm	= nil		-- string
 local isBankOpen		= false		-- boolean, whether the real bank is open
+local mailPage          = 1      	-- integer, current page of bag 101
 local BankItems_Quantity = 1		-- integer, used for hooking EnhTooltip data
 local bagsToUpdate		= {}		-- table, stores data about bags to update on next OnUpdate
 local mailItem			= {}		-- table, stores data about the item to be mailed
@@ -219,10 +236,10 @@ BankItems_TooltipCache = {} -- table, contains a cache of tooltip lines that hav
 -- Some constants
 local BANKITEMS_BOTTOM_SCREEN_LIMIT	= 80				-- Pixels from bottom not to overlap BankItem bags
 local BANKITEMS_UCFA = updateContainerFrameAnchors	-- Remember Blizzard's UCFA for NON-SAFE replacement
-local BAGNUMBERS = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 100} -- List of bag numbers used internally by BankItems (11 and 101 removed for Classic)
-local BAGNUMBERSPLUSMAIL = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 101}	-- List of bag numbers used internally by BankItems (11 removed for Classic)
+local BAGNUMBERS = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 100, 101}	-- List of bag numbers used internally by BankItems (11 and 101 removed for Classic, restored for Burning Crusade Classic)
+local BAGNUMBERSPLUSMAIL = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 100, 101}	-- List of bag numbers used internally by BankItems (11 removed for Classic, restored for Burning Crusade Classic)
 -- 0 through 4 are the player's bags, to be shown in reverse order, preceded by 100, the player's equipment
--- 5 through 10 are the bank bags, left to right
+-- 5 through 11 are the bank bags, left to right
 -- 101 is never visible, contains the mail information
 local BANKITEMS_UIPANELWINDOWS_TABLE = {area = "left", pushable = 11, whileDead = 1}	-- UI Panel layout to be used
 local BANKITEMS_INVSLOT = {
@@ -316,8 +333,8 @@ function BankItems_Bag_OnEnter(self)
 		GameTooltip:SetText(BACKPACK_TOOLTIP)
 	elseif (id == 100) then
 		GameTooltip:SetText(BANKITEMS_EQUIPPED_ITEMS_TEXT)
---	elseif (id == 101) then
---		GameTooltip:SetText(BANKITEMS_MAILBOX_ITEMS_TEXT)
+	elseif (id == 101) then
+		GameTooltip:SetText(BANKITEMS_MAILBOX_ITEMS_TEXT)
 	elseif (bankPlayer["Bag"..id]) then
 		GameTooltip:SetHyperlink(bankPlayer["Bag"..id].link)
 		BankItems_AddEnhTooltip(bankPlayer["Bag"..id].link, 1)
@@ -331,13 +348,13 @@ function BankItems_Bag_OnClick(self, button)
 	if (not theBag) then
 		if (bagID == 100) then
 			BankItems_Chat(BANKITEMS_DATA_NOT_FOUND_TEXT)
---		elseif (bagID == 101) then
---			BankItems_Chat(BANKITEMS_MAILDATA_NOT_FOUND_TEXT)
+		elseif (bagID == 101) then
+			BankItems_Chat(BANKITEMS_MAILDATA_NOT_FOUND_TEXT)
 		end
 		return
 	end
 
-	if (button and button == "LeftButton" and IsShiftKeyDown() and ChatEdit_GetActiveWindow():IsVisible() and bagID and bagID > 0 and bagID <= 10) then
+	if (button and button == "LeftButton" and IsShiftKeyDown() and ChatEdit_GetActiveWindow():IsVisible() and bagID and bagID > 0 and bagID <= 11) then
 		ChatEdit_GetActiveWindow():Insert(theBag.link)
 		return
 	end
@@ -399,6 +416,7 @@ function BankItems_Bag_OnClick(self, button)
 	else
 		if ( rows == 1 ) then
 			-- If only one row chop off the bottom of the texture
+			--	Hawksy: looks a bit weird, but I haven't found a fix
 			bgTextureTop:SetTexCoord(0, 1, 0.00390625, 0.16796875)
 			bgTextureTop:SetHeight(86)
 		else
@@ -452,8 +470,8 @@ function BankItems_Bag_OnClick(self, button)
 		getglobal(bagName.."Name"):SetText(BACKPACK_TOOLTIP)
 	elseif (bagID == 100) then
 		getglobal(bagName.."Name"):SetText(BANKITEMS_EQUIPPED_ITEMS_TEXT)
---	elseif (bagID == 101) then
---		getglobal(bagName.."Name"):SetText(BANKITEMS_MAILBOX_ITEMS_TEXT)
+	elseif (bagID == 101) then
+		getglobal(bagName.."Name"):SetText(BANKITEMS_MAILBOX_ITEMS_TEXT)
 	else
 		getglobal(bagName.."Name"):SetText(BankItems_ParseLink(theBag.link))
 	end
@@ -474,7 +492,7 @@ function BankItems_Bag_OnClick(self, button)
 		end
 		button:Show()
 	end
-	for bagItem = size + 1, 36 do
+	for bagItem = size + 1, 40 do -- [classic 36 burning crusade 40]
 		getglobal(bagName.."Item"..bagItem):Hide()
 	end
 
@@ -519,8 +537,8 @@ function BankItems_BagItem_OnEnter(self)
 	local itemID = bankPlayer["Bag"..bagID].size - ( self:GetID() - 1 )
 	if (bagID == 100 and itemID == 20) then		-- Treat slot 20 as slot 0 (ammo slot)
 		itemID = 0
---	elseif (bagID == 101) then
---		itemID = itemID + (mailPage - 1) * 18
+	elseif (bagID == 101) then
+		itemID = itemID + (mailPage - 1) * 18
 	end
 	local item = bankPlayer["Bag"..bagID][itemID]
 	if (item) then
@@ -548,8 +566,8 @@ function BankItems_BagItem_OnClick(self, button)
 	local itemID = bankPlayer["Bag"..bagID].size - ( self:GetID() - 1 )
 	if (bagID == 100 and itemID == 20) then		-- Treat slot 20 as slot 0 (ammo slot)
 		itemID = 0
---	elseif (bagID == 101) then
---		itemID = itemID + (mailPage - 1) * 18
+	elseif (bagID == 101) then
+		itemID = itemID + (mailPage - 1) * 18
 	end
 	local item = bankPlayer["Bag"..bagID][itemID]
 	if (item) then
@@ -574,8 +592,8 @@ function BankItems_BagPortrait_OnEnter(self)
 		GameTooltip:SetText(BACKPACK_TOOLTIP)
 	elseif ( bagNum == 100 ) then
 		GameTooltip:SetText(BANKITEMS_EQUIPPED_ITEMS_TEXT)
---	elseif ( bagNum == 101 ) then
---		GameTooltip:SetText(BANKITEMS_MAILBOX_ITEMS_TEXT)
+	elseif ( bagNum == 101 ) then
+		GameTooltip:SetText(BANKITEMS_MAILBOX_ITEMS_TEXT)
 	elseif ( bagNum == KEYRING_CONTAINER ) then
 		GameTooltip:SetText(KEYRING)
 	elseif ( bankPlayer["Bag"..bagNum].link ) then
@@ -716,11 +734,11 @@ function BankItems_UpdateFrame_OnUpdate(self, elapsed)
 	if bagsToUpdate.elap then
 		bagsToUpdate.elap = bagsToUpdate.elap - elapsed
 	end
-	for i = 0, 10 do
-		if (bagsToUpdate[i]) then
-			BankItems_SaveInvItems(i)
-			bagsToUpdate[i] = nil
-		end
+	for i = 0, 11 do -- [classic 10 burning crusade 11]
+		-- force update of all, whether we think they need it or not, to handle case of bag being dragged into bank and not being updated
+		--	still needs BankItems closed and opened to show the change, but that's a step forward
+		BankItems_SaveInvItems(i)
+		bagsToUpdate[i] = nil
 	end
 	if bagsToUpdate.bank then
 		-- Hawksy: adding this bit (from retail) seems to fix the bank contents bug -- monitor it
@@ -746,7 +764,7 @@ do
 	-- Create the main BankItems frame
 	BankItems_Frame = CreateFrame("Frame", "BankItems_Frame", UIParent)
 	BankItems_Frame:Hide()
-	BankItems_Frame:SetWidth(453)
+	BankItems_Frame:SetWidth(453) -- [classic 403 burning crusade 453]
 	BankItems_Frame:SetHeight(430)
 	BankItems_Frame:SetPoint("TOPLEFT", 50, -104)
 	BankItems_Frame:EnableMouse(true)
@@ -819,6 +837,18 @@ do
 		end
 	end)
 
+
+	-- Create the Reload Button
+	CreateFrame("Button", "BankItems_ReloadButton", BankItems_Frame)
+	BankItems_ReloadButton:SetWidth(32)
+	BankItems_ReloadButton:SetHeight(32)
+	BankItems_ReloadButton:SetPoint("TOPRIGHT", BankItems_Frame, "TOPRIGHT", -164, -38)
+	BankItems_ReloadButton:SetNormalTexture("Interface\\AddOns\\BankItems\\Reload")	
+	BankItems_ReloadButton:SetPushedTexture("Interface\\AddOns\\BankItems\\Reload")	
+	BankItems_ReloadButton:SetDisabledTexture("Interface\\AddOns\\BankItems\\Reload")	
+	BankItems_ReloadButton:SetHighlightTexture("Interface\\AddOns\\BankItems\\Reload")	
+
+
 	-- had problems with ItemButtonTemplate, ItemButton isn't in classic, now seems to work anyway
 
 	-- Create the 28 (classic 24) main bank buttons
@@ -827,8 +857,8 @@ do
 		ItemButtonAr[i]:SetID(i)
 		if (i == 1) then
 			ItemButtonAr[i]:SetPoint("TOPLEFT", 40, -73)
-		elseif (mod(i, 7) == 1) then
-			ItemButtonAr[i]:SetPoint("TOPLEFT", ItemButtonAr[i-7], "BOTTOMLEFT", 0, -7)
+		elseif (mod(i, 7) == 1) then -- [classic 6 burning crusade 7]
+			ItemButtonAr[i]:SetPoint("TOPLEFT", ItemButtonAr[i-7], "BOTTOMLEFT", 0, -7) -- [classic 6 burning crusade 7]
 		else
 			ItemButtonAr[i]:SetPoint("TOPLEFT", ItemButtonAr[i-1], "TOPRIGHT", 12, 0)
 		end
@@ -849,19 +879,20 @@ do
 		BagButtonAr[i].count = _G["BankItems_Bag"..i.."Count"]
 		BagButtonAr[i].texture = _G["BankItems_Bag"..i.."IconTexture"]
 	end
-	BagButtonAr[5]:SetPoint("TOPLEFT", ItemButtonAr[22], "BOTTOMLEFT", 0, -33) -- top row, bank bags
+	BagButtonAr[5]:SetPoint("TOPLEFT", ItemButtonAr[22], "BOTTOMLEFT", 0, -33) -- top row, bank bags -- [classic 19 burning crusade 22] [might the -33 need to be -32]
 	BagButtonAr[6]:SetPoint("TOPLEFT", BagButtonAr[5], "TOPRIGHT", 12, 0)
 	BagButtonAr[7]:SetPoint("TOPLEFT", BagButtonAr[6], "TOPRIGHT", 12, 0)
 	BagButtonAr[8]:SetPoint("TOPLEFT", BagButtonAr[7], "TOPRIGHT", 12, 0)
 	BagButtonAr[9]:SetPoint("TOPLEFT", BagButtonAr[8], "TOPRIGHT", 12, 0)
 	BagButtonAr[10]:SetPoint("TOPLEFT", BagButtonAr[9], "TOPRIGHT", 12, 0)
 	BagButtonAr[11]:SetPoint("TOPLEFT", BagButtonAr[10], "TOPRIGHT", 12, 0)
-	BagButtonAr[100]:SetPoint("TOPLEFT", BagButtonAr[6], "BOTTOMLEFT", 0, -6) -- bottom row, player bags
-	BagButtonAr[4]:SetPoint("TOPLEFT", BagButtonAr[100], "TOPRIGHT", 12, 0)
+	BagButtonAr[101]:SetPoint("TOPLEFT", BagButtonAr[5], "BOTTOMLEFT", 0, -6) -- bottom row, mail
+	BagButtonAr[100]:SetPoint("TOPLEFT", BagButtonAr[6], "BOTTOMLEFT", 0, -6) -- bottom row, equipped
+	BagButtonAr[4]:SetPoint("TOPLEFT", BagButtonAr[100], "TOPRIGHT", 12, 0) -- bottom row, player bags
 	BagButtonAr[3]:SetPoint("TOPLEFT", BagButtonAr[4], "TOPRIGHT", 12, 0)
 	BagButtonAr[2]:SetPoint("TOPLEFT", BagButtonAr[3], "TOPRIGHT", 12, 0)
 	BagButtonAr[1]:SetPoint("TOPLEFT", BagButtonAr[2], "TOPRIGHT", 12, 0)
-	BagButtonAr[0]:SetPoint("TOPLEFT", BagButtonAr[1], "TOPRIGHT", 12, 0)
+	BagButtonAr[0]:SetPoint("TOPLEFT", BagButtonAr[1], "TOPRIGHT", 12, 0) -- bottom row, player backpack
 
 	-- Create the Money frame
 	CreateFrame("Frame", "BankItems_MoneyFrame", BankItems_Frame, "SmallMoneyFrameTemplate")
@@ -926,7 +957,7 @@ do
 		BagContainerAr[i].name:SetWidth(112)
 		BagContainerAr[i].name:SetHeight(12)
 		BagContainerAr[i].name:SetPoint("TOPLEFT", 47, -10)
-		for j = 1, 40 do
+		for j = 1, 40 do -- [classic 36 burning crusade 40]
 			BagContainerAr[i][j] = CreateFrame("Button", name.."Item"..j, BagContainerAr[i], "ItemButtonTemplate")
 			BagContainerAr[i][j]:SetID(j)
 			BagContainerAr[i][j].count = _G[name.."Item"..j.."Count"]
@@ -986,30 +1017,30 @@ do
 	BankItems_SearchButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
 
 	-- Create the Next Mail page button in bag 101
---	CreateFrame("Button", "BankItems_NextMailButton", BagContainerAr[101])
---	BankItems_NextMailButton:SetWidth(32)
---	BankItems_NextMailButton:SetHeight(32)
---	BankItems_NextMailButton:SetPoint("TOPLEFT", 70, -22)
---	BankItems_NextMailButton:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up")
---	BankItems_NextMailButton:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down")
---	BankItems_NextMailButton:SetDisabledTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Disabled")
---	BankItems_NextMailButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+	CreateFrame("Button", "BankItems_NextMailButton", BagContainerAr[101])
+	BankItems_NextMailButton:SetWidth(32)
+	BankItems_NextMailButton:SetHeight(32)
+	BankItems_NextMailButton:SetPoint("TOPLEFT", 70, -22)
+	BankItems_NextMailButton:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up")
+	BankItems_NextMailButton:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down")
+	BankItems_NextMailButton:SetDisabledTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Disabled")
+	BankItems_NextMailButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
 
 	-- Create the Prev Mail page button in bag 101
---	CreateFrame("Button", "BankItems_PrevMailButton", BagContainerAr[101])
---	BankItems_PrevMailButton:SetWidth(32)
---	BankItems_PrevMailButton:SetHeight(32)
---	BankItems_PrevMailButton:SetPoint("TOPLEFT", 45, -22)
---	BankItems_PrevMailButton:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up")
---	BankItems_PrevMailButton:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Down")
---	BankItems_PrevMailButton:SetDisabledTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Disabled")
---	BankItems_PrevMailButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+	CreateFrame("Button", "BankItems_PrevMailButton", BagContainerAr[101])
+	BankItems_PrevMailButton:SetWidth(32)
+	BankItems_PrevMailButton:SetHeight(32)
+	BankItems_PrevMailButton:SetPoint("TOPLEFT", 45, -22)
+	BankItems_PrevMailButton:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up")
+	BankItems_PrevMailButton:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Down")
+	BankItems_PrevMailButton:SetDisabledTexture("Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Disabled")
+	BankItems_PrevMailButton:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
 
 	-- Create the mail text in bag 101
---	BagContainerAr[101].mailtext = BagContainerAr[101]:CreateFontString("BankItems_ContainerFrame101_MailText", "ARTWORK", "GameFontHighlight")
---	BagContainerAr[101].mailtext:SetPoint("BOTTOMRIGHT", BagContainerAr[101], "TOPLEFT", 95, -64)
---	BagContainerAr[101].mailtext:SetText("1 - 18 / 18")
---	BagContainerAr[101].mailtext:SetJustifyH("RIGHT")
+	BagContainerAr[101].mailtext = BagContainerAr[101]:CreateFontString("BankItems_ContainerFrame101_MailText", "ARTWORK", "GameFontHighlight")
+	BagContainerAr[101].mailtext:SetPoint("BOTTOMRIGHT", BagContainerAr[101], "TOPLEFT", 95, -64)
+	BagContainerAr[101].mailtext:SetText("1 - 18 / 18")
+	BagContainerAr[101].mailtext:SetJustifyH("RIGHT")
 
 	-- Create a frame for doing OnUpdates, this isn't used for anything else or shown
 	-- This is to reduce the number of times BankItems records bag/worn item changes
@@ -1127,6 +1158,16 @@ function BankItems_SlashHandler(msg)
 		allBags = 3
 	elseif (msg == "allbank") then
 		allBags = 2
+	elseif (msg == "redisplay") then
+		HideUIPanel(BankItems_Frame)
+		ShowUIPanel(BankItems_Frame)
+		if (allBags == 3) then
+			BankItems_OpenBagsByBehavior(true, true, false, false)
+		elseif (allBags == 2) then
+			BankItems_OpenBagsByBehavior(true, false, false, false)
+		else
+			BankItems_OpenBagsByBehavior(unpack(BankItems_Save.Behavior))
+		end
 	elseif (msg == "") then
 		allBags = BankItems_Save.Behavior
 	else
@@ -1144,13 +1185,17 @@ function BankItems_SlashHandler(msg)
 	end
 
 	if (BankItems_Frame:IsVisible()) then
-		HideUIPanel(BankItems_Frame)
+		if (msg == "redisplay") then
+			-- don't hide if doing a redisplay
+		else
+			HideUIPanel(BankItems_Frame)
+		end
 	else
 		ShowUIPanel(BankItems_Frame)
 		if (allBags == 3) then
-			BankItems_OpenBagsByBehavior(true, true, false)
+			BankItems_OpenBagsByBehavior(true, true, false, false)
 		elseif (allBags == 2) then
-			BankItems_OpenBagsByBehavior(true, false, false)
+			BankItems_OpenBagsByBehavior(true, false, false, false)
 		else
 			BankItems_OpenBagsByBehavior(unpack(BankItems_Save.Behavior))
 		end
@@ -1178,7 +1223,11 @@ function BankItems_Initialize()
 		BankItems_Save.posoffsetx = 50
 		BankItems_Save.posoffsety = -104
 	end
+	BankItems_Frame:ClearAllPoints()
+	BankItems_Frame:SetWidth(453)
+	BankItems_Frame:SetHeight(430)
 	BankItems_Frame:SetPoint(BankItems_Save.pospoint, UIParent, BankItems_Save.posrelpoint, BankItems_Save.posoffsetx, BankItems_Save.posoffsety)
+	BankItems_Frame:SetUserPlaced(nil)
 
 	-- Upgrade behavior
 	if (type(BankItems_Save.Behavior) == "number") then
@@ -1251,18 +1300,18 @@ end
 function BankItems_SaveItems()
 	local itemLink, bagNum_ID
 	if (isBankOpen) then
-		for num = 1, 28 do
-			itemLink = GetContainerItemLink(BANK_CONTAINER, num)
+		for num = 1, 28 do -- [classic 24 burning crusade 28]
+			itemLink = C_Container.GetContainerItemLink(BANK_CONTAINER, num)
 			if (itemLink) then
 				selfPlayer[num] = selfPlayer[num] or newTable()
-				selfPlayer[num].icon, selfPlayer[num].count = GetContainerItemInfo(BANK_CONTAINER, num)
+				selfPlayer[num].icon, selfPlayer[num].count = C_Container.GetContainerItemInfo(BANK_CONTAINER, num)
 				selfPlayer[num].link = itemLink
 			else
 				delTable(selfPlayer[num])
 				selfPlayer[num] = nil
 			end
 		end
-		for bagNum = 5, 11 do
+		for bagNum = 5, 11 do -- [classic 10 burning crusade 11]
 			bagNum_ID = BankButtonIDToInvSlotID(bagNum, 1) - 4
 			itemLink = GetInventoryItemLink("player", bagNum_ID)
 			if (itemLink) then
@@ -1270,13 +1319,13 @@ function BankItems_SaveItems()
 				local theBag = selfPlayer["Bag"..bagNum]
 				theBag.link = itemLink
 				theBag.icon = GetInventoryItemTexture("player", bagNum_ID)
-				theBag.size = GetContainerNumSlots(bagNum)
+				theBag.size = C_Container.GetContainerNumSlots(bagNum)
 				for bagItem = 1, theBag.size do
-					itemLink = GetContainerItemLink(bagNum, bagItem)
+					itemLink = C_Container.GetContainerItemLink(bagNum, bagItem)
 					if (itemLink) then
 						theBag[bagItem] = theBag[bagItem] or newTable()
 						theBag[bagItem].link = itemLink
-						theBag[bagItem].icon, theBag[bagItem].count = GetContainerItemInfo(bagNum, bagItem)
+						theBag[bagItem].icon, theBag[bagItem].count = C_Container.GetContainerItemInfo(bagNum, bagItem)
 					else
 						delTable(theBag[bagItem])
 						theBag[bagItem] = nil
@@ -1293,7 +1342,7 @@ function BankItems_SaveItems()
 	end
 	if (BankItems_Frame:IsVisible()) then
 		BankItems_PopulateFrame()
-		for i = 5, 11 do
+		for i = 5, 11 do -- [classic 10 burning crusade 11]
 			if (BagContainerAr[i]:IsVisible()) then
 				BankItems_PopulateBag(i)
 			end
@@ -1331,15 +1380,15 @@ function BankItems_SaveInvItems(bagID)
 			selfPlayer[bagString] = selfPlayer[bagString] or newTable()
 			selfPlayer[bagString].link = nil
 			selfPlayer[bagString].icon = "Interface\\Buttons\\Button-Backpack-Up"
-			selfPlayer[bagString].size = GetContainerNumSlots(bagNum)
+			selfPlayer[bagString].size = C_Container.GetContainerNumSlots(bagNum)
 		else
-			bagNum_ID = ContainerIDToInventoryID(bagNum)
+			bagNum_ID = C_Container.ContainerIDToInventoryID(bagNum)
 			itemLink = GetInventoryItemLink("player", bagNum_ID)
 			if (itemLink) then
 				selfPlayer[bagString] = selfPlayer[bagString] or newTable()
 				selfPlayer[bagString].link = itemLink
 				selfPlayer[bagString].icon = GetInventoryItemTexture("player", bagNum_ID)
-				selfPlayer[bagString].size = GetContainerNumSlots(bagNum)
+				selfPlayer[bagString].size = C_Container.GetContainerNumSlots(bagNum)
 			else
 				delTable(selfPlayer[bagString])
 				selfPlayer[bagString] = nil
@@ -1352,11 +1401,11 @@ function BankItems_SaveInvItems(bagID)
 		local theBag = selfPlayer[bagString]
 		if (theBag) then
 			for bagItem = 1, theBag.size do
-				itemLink = GetContainerItemLink(bagNum, bagItem)
+				itemLink = C_Container.GetContainerItemLink(bagNum, bagItem)
 				if (itemLink) then
 					theBag[bagItem] = theBag[bagItem] or newTable()
 					theBag[bagItem].link = itemLink
-					theBag[bagItem].icon, theBag[bagItem].count = GetContainerItemInfo(bagNum, bagItem)
+					theBag[bagItem].icon, theBag[bagItem].count = C_Container.GetContainerItemInfo(bagNum, bagItem)
 				else
 					delTable(theBag[bagItem])
 					theBag[bagItem] = nil
@@ -1390,11 +1439,11 @@ function BankItems_SaveInvItems(bagID)
 end
 
 function BankItems_SaveMailbox()
-	local _, sender, money, daysLeft, itemCount, name, count, itemPointer
+	local _, sender, money, daysLeft, itemCount, name, icon, count, itemPointer
 	local numItems, totalItems = GetInboxNumItems()
 	local j, moneyTotal, subCount = 0, 0, 0
 	local theTime = time()
-	-- Save mailbox items as bag 101 [Hawksy: but will not display as a bag]
+	-- Save mailbox items as bag 101
 	selfPlayer.Bag101 = selfPlayer.Bag101 or newTable()
 	selfPlayer.Bag101.icon = "Interface\\MailFrame\\Mail-Icon"
 	selfPlayer.Bag101.time = theTime
@@ -1403,12 +1452,13 @@ function BankItems_SaveMailbox()
 		moneyTotal = moneyTotal + money
 		if itemCount then
 			for k = 1, ATTACHMENTS_MAX_RECEIVE do
-				name, _, _, count = GetInboxItem(i, k)
+				name, _, icon, count = GetInboxItem(i, k)
 				if name then
 					j = j + 1
 					selfPlayer.Bag101[j] = selfPlayer.Bag101[j] or newTable()
 					itemPointer = selfPlayer.Bag101[j]
 					itemPointer.link = GetInboxItemLink(i, k)
+					itemPointer.icon = icon
 					itemPointer.count = count
 					itemPointer.expiry = theTime + floor(daysLeft*60*60*24)
 					if InboxItemCanDelete(i) then -- item is returnable
@@ -1447,7 +1497,7 @@ function BankItems_SaveMailbox()
 	selfPlayer.Bag101.outOfDate = nil
 end
 
-function BankItems_OpenBagsByBehavior(bank, inv, equip)
+function BankItems_OpenBagsByBehavior(bank, inv, equip, mail)
 	if inv then
 		for i = 0, 4 do
 			BagContainerAr[i]:Hide()
@@ -1455,7 +1505,7 @@ function BankItems_OpenBagsByBehavior(bank, inv, equip)
 		end
 	end
 	if bank then
-		for i = 5, 11 do
+		for i = 5, 11 do -- [classic 10 burning crusade 11]
 			BagContainerAr[i]:Hide()
 			BagButtonAr[i]:Click()
 		end
@@ -1464,10 +1514,10 @@ function BankItems_OpenBagsByBehavior(bank, inv, equip)
 		BagContainerAr[100]:Hide()
 		BagButtonAr[100]:Click()
 	end
---	if (mail) then
---		BagContainerAr[101]:Hide()
---		BagButtonAr[101]:Click()
---	end
+	if mail then
+		BagContainerAr[101]:Hide()
+		BagButtonAr[101]:Click()
+	end
 end
 
 function BankItems_UpdateMoney()
@@ -1491,8 +1541,8 @@ function BankItems_PopulateFrame()
 	else
 		BankItems_Portrait:SetTexture("Interface\\QuestFrame\\UI-QuestLog-BookIcon")
 	end
-	-- 24 bank slots
-	for i = 1, 28 do
+	-- 24 or 28 bank slots
+	for i = 1, 28 do -- [classic 24 burning crusade 28]
 		if ( bankPlayer[i] ) then
 			ItemButtonAr[i].texture:SetTexture(bankPlayer[i].icon)
 			if (bankPlayer[i].count > 1) then
@@ -1507,7 +1557,7 @@ function BankItems_PopulateFrame()
 		end
 	end
 	-- 12 bag slots
-	for i = 0, 11 do
+	for i = 0, 11 do -- [classic 10 burning crusade 11]
 		if ( bankPlayer["Bag"..i] and bankPlayer["Bag"..i].icon ) then
 			BagButtonAr[i].texture:SetTexture(bankPlayer["Bag"..i].icon)
 			BagButtonAr[i].texture:SetVertexColor(1, 1, 1)
@@ -1530,9 +1580,9 @@ function BankItems_PopulateFrame()
 	BagButtonAr[100].texture:SetVertexColor(1, 1, 1)
 	BagButtonAr[100]:Show()
 	-- Mail items
---	BagButtonAr[101].texture:SetTexture("Interface\\MailFrame\\Mail-Icon")
---	BagButtonAr[101].texture:SetVertexColor(1, 1, 1)
---	BagButtonAr[101]:Show()
+	BagButtonAr[101].texture:SetTexture("Interface\\MailFrame\\Mail-Icon")
+	BagButtonAr[101].texture:SetVertexColor(1, 1, 1)
+	BagButtonAr[101]:Show()
 	-- Money
 	BankItems_UpdateMoney()
 	-- Location
@@ -1544,6 +1594,7 @@ function BankItems_PopulateFrame()
 end
 
 function BankItems_PopulateBag(bagID)
+
 	local _, button, theBag, idx, textureName
 	theBag = bankPlayer["Bag"..bagID]
 	if theBag and theBag.size then
@@ -1552,18 +1603,18 @@ function BankItems_PopulateBag(bagID)
 			idx = theBag.size - (bagItem - 1)
 			if (bagID == 100 and idx == 20) then	-- Treat slot 20 as slot 0 (ammo slot)
 				idx = 0
---			elseif (bagID == 101) then		-- Adjust for page number
---				idx = idx + (mailPage - 1) * 18
---				BagContainerAr[101].mailtext:SetText(((mailPage - 1) * 18 + 1).." - "..min(mailPage * 18, #bankPlayer.Bag101).." / "..#bankPlayer.Bag101)
---				if (theBag.size >= 18) then
---					BagContainerAr[101].mailtext:Show()
---					BankItems_NextMailButton:Show()
---					BankItems_PrevMailButton:Show()
---				else
---					BagContainerAr[101].mailtext:Hide()
---					BankItems_NextMailButton:Hide()
---					BankItems_PrevMailButton:Hide()
---				end
+			elseif (bagID == 101) then		-- Adjust for page number
+				idx = idx + (mailPage - 1) * 18
+				BagContainerAr[101].mailtext:SetText(((mailPage - 1) * 18 + 1).." - "..min(mailPage * 18, #bankPlayer.Bag101).." / "..#bankPlayer.Bag101)
+				if (theBag.size >= 18) then
+					BagContainerAr[101].mailtext:Show()
+					BankItems_NextMailButton:Show()
+					BankItems_PrevMailButton:Show()
+				else
+					BagContainerAr[101].mailtext:Hide()
+					BankItems_NextMailButton:Hide()
+					BankItems_PrevMailButton:Hide()
+				end
 			end
 			if (theBag[idx]) then
 				if (bagID == 100) then
@@ -1783,7 +1834,7 @@ function BankItems_GenerateExportText()
 		-- Group similar items together in the report
 		local data = newTable()
 		local itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount, itemEquipLoc, itemTexture
-		for num = 1, 28 do
+		for num = 1, 28 do -- [classic 24 burning crusade 28]
 			if (bankPlayer[num]) then
 				itemName, itemLink, itemRarity, itemLevel, itemMinLevel, itemType, itemSubType, itemStackCount, itemEquipLoc, itemTexture = GetItemInfo(bankPlayer[num].link)
 				if (itemType) then
@@ -1838,7 +1889,7 @@ function BankItems_GenerateExportText()
 		delTable(data)
 	else
 		-- Don't group similar items together in the report
-		for num = 1, 28 do
+		for num = 1, 28 do -- [classic 24 burning crusade 28]
 			if bankPlayer[num] then
 				if BankItems_Save.ExportPrefix then
 					prefix = "Bank Item "..num..": "
@@ -1886,7 +1937,7 @@ function BankItems_Search(searchText)
 		for key, bankPlayer in pairs(BankItems_Save) do
 			local _, realm = strsplit("|", key)
 			if (type(bankPlayer) == "table" and (BankItems_Save.SearchAllRealms or realm == selfPlayerRealm) and key ~= "Behavior") then
-				for num = 1, 28 do
+				for num = 1, 28 do -- [classic 24 burning crusade 28]
 					if (bankPlayer[num]) then
 						temp = strmatch(bankPlayer[num].link, "%[(.*)%]")
 						if strfind(strlower(temp), searchText, 1, true) then
@@ -1960,7 +2011,7 @@ function BankItems_Search(searchText)
 			local _, realm = strsplit("|", key)
 			if (type(bankPlayer) == "table" and (BankItems_Save.SearchAllRealms or realm == selfPlayerRealm) and key ~= "Behavior") then
 				count = 0
-				for num = 1, 28 do
+				for num = 1, 28 do -- [classic 24 burning crusade 28]
 					if ( bankPlayer[num] and bankPlayer[num].link ) then
 						if (BankItems_Save.ExportPrefix) then
 							prefix = "     Bank Item "..num..": "
@@ -2025,6 +2076,16 @@ function BankItems_DisplaySearch()
 	BankItems_ExportFrame_GroupData:SetChecked(BankItems_Save.GroupExportData)
 	BankItems_ExportFrame_SearchAllRealms:SetChecked(BankItems_Save.SearchAllRealms)
 	BankItems_ExportFrame:Show()
+end
+
+function BankItems_Reload()
+	-- in some situations BankItems shows an earlier state of inventory despite the situation having changed
+			-- one example would be dragging a bag from bank to player or back
+	-- closing BankItems and then reopening it solves most of those
+	-- this is a single button click that does the same thing as closing and reopening
+	HideUIPanel(BankItems_Frame)
+	ShowUIPanel(BankItems_Frame)
+	print("BankItems reloaded")
 end
 
 function BankItems_Hook_SendMail(recipient, subject, body)
@@ -2330,8 +2391,8 @@ end
 -------------------------------------------------
 -- Set scripts of the various widgets
 
--- The 24 main bank buttons
-for i = 1, 28 do
+-- The 24 or 28 main bank buttons
+for i = 1, 28 do -- [classic 24 burning crusade 28]
 	ItemButtonAr[i]:SetScript("OnLeave", BankItems_Button_OnLeave)
 	ItemButtonAr[i]:SetScript("OnEnter", BankItems_Button_OnEnter)
 	ItemButtonAr[i]:SetScript("OnClick", BankItems_Button_OnClick)
@@ -2348,7 +2409,7 @@ end
 for _, i in ipairs(BAGNUMBERS) do
 	BagContainerAr[i]:SetScript("OnShow", BankItems_Bag_OnShow)
 	BagContainerAr[i]:SetScript("OnHide", BankItems_Bag_OnHide)
-	for j = 1, 40 do
+	for j = 1, 40 do -- [classic 36 burning crusade 40]
 		BagContainerAr[i][j]:SetScript("OnLeave", BankItems_Button_OnLeave)
 		BagContainerAr[i][j]:SetScript("OnEnter", BankItems_BagItem_OnEnter)
 		BagContainerAr[i][j]:SetScript("OnClick", BankItems_BagItem_OnClick)
@@ -2389,6 +2450,14 @@ BankItems_SearchButton:SetScript("OnEnter", function(self)
 end)
 BankItems_SearchButton:SetScript("OnLeave", BankItems_Button_OnLeave)
 BankItems_SearchButton:SetScript("OnClick", BankItems_DisplaySearch)
+
+-- The Reload Button
+BankItems_ReloadButton:SetScript("OnEnter", function(self)
+	GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+	GameTooltip:SetText(BANKITEMS_RELOADBUTTON_TEXT, nil, nil, nil, nil, 1)
+end)
+BankItems_ReloadButton:SetScript("OnLeave", BankItems_Button_OnLeave)
+BankItems_ReloadButton:SetScript("OnClick", BankItems_Reload)
 
 
 -- The BankItems frame
@@ -3257,5 +3326,3 @@ function BankItems_Hook_GameTooltip_SetHyperlink(self, hyperlink)
 	end
 end
 hooksecurefunc(GameTooltip, "SetHyperlink", BankItems_Hook_GameTooltip_SetHyperlink)
-
-
